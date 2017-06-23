@@ -1,4 +1,6 @@
 #!/usr/bin/perl
+# comment from VS Code
+
 use strict;
 use warnings;
 use DBI;
