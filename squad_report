@@ -1,0 +1,289 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use DBI;
+use Data::Dumper;
+use Switch;
+use MIME::Lite;
+
+my $html_dir="/home/dnedved/nedved.com/squadreport/";
+my $url_prefix="http://www.nedved.com/squadreport/";
+my $mail_dir="/home/dnedved/tmp/";
+my $mail_file=$mail_dir."squadreport".$$.".mail";
+my $mail_from="dnedved\@ashevillecap.org";
+my $mail_to="dnedved\@ashevillecap.org";
+my $mail_subject="CAP Squadron ES Training Report";
+
+my $db="capwatch_test";
+my $host="mysql.nedved.com";
+my $port="3306";
+my $dsn="DBI:mysql:database=$db;host=$host;port=$port";
+my $user="capwatch_test";
+my $pass="YYC7E2cF";
+my $dbh = DBI->connect($dsn,$user,$pass, {
+	PrintError => 0,
+	RaiseError => 1
+});
+
+my $sth;
+my %Achievements;
+my %Tasks;
+
+# pre-load Achievements into hash
+$sth = $dbh->prepare("SELECT * FROM Achievements");
+$sth->execute( );
+while(my $ref = $sth->fetchrow_hashref) {
+	my $AchvID=$ref->{'AchvID'};
+	$Achievements{$AchvID}{'Achv'}=$ref->{'Achv'};
+	$Achievements{$AchvID}{'FunctionalArea'}=$ref->{'FunctionalArea'};
+}
+
+# pre-load Tasks into hash
+$sth = $dbh->prepare("SELECT * FROM Tasks");
+$sth->execute( );
+while(my $ref = $sth->fetchrow_hashref) {
+	my $TaskID=$ref->{'TaskID'};
+	my $TaskName=$ref->{'TaskName'};
+	if ($TaskName =~ /^Complete Task (.*)/) {
+		$Tasks{$TaskID}{'TaskName'}=$1;
+	} else {
+		$Tasks{$TaskID}{'TaskName'}=$TaskName;
+	}
+	$Tasks{$TaskID}{'FunctionalArea'}=$ref->{'FunctionalArea'};
+}
+
+sub printTable {
+	my $ofh=$_[0];
+	my $memberType=$_[1];
+	my $achv=$_[2];
+	my $achv_num;
+
+	my $RAND=int(rand(99999999));
+	my $fileName="report".$$.$RAND.".html";
+	my $html_file=$html_dir.$fileName;
+	my $html_url=$url_prefix.$fileName;
+
+	my @SubAchievements;
+	my @TaskSteps;
+	my @SubTasks;
+	my %achvCount;
+	my %taskCount;
+
+	my $sth1;
+	my $sth2;
+
+	switch ($achv) {
+		case "UDF" { $achv_num=71; }
+		case "GTM3" { $achv_num=70; }
+		case "MRO" { $achv_num=76; }
+		case "FLM" { $achv_num=74; }
+
+		print "unknown achv $achv\n";
+		return (1);
+	}
+
+	# build array of other achievements
+	$sth1 = $dbh->prepare("SELECT * FROM AchvStepAchv WHERE AchvID = $achv_num ORDER BY AchvStepTaskID ASC");
+	$sth1->execute( );
+	while(my $ref = $sth1->fetchrow_hashref) {
+		my $OrigAchvID=$ref->{'OrigAchvID'};
+		push @SubAchievements,$OrigAchvID;
+	}
+
+	# build array of steps for tasks
+	$sth1 = $dbh->prepare("SELECT DISTINCT StepID FROM AchvStepTasks WHERE AchvID = $achv_num ORDER BY StepID ASC");
+	$sth1->execute( );
+	while(my $ref = $sth1->fetchrow_hashref) {
+		my$StepID=$ref->{'StepID'};
+		push @TaskSteps,$StepID;
+	}
+
+	# build array of tasks by step
+	my $step;
+	foreach $step (@TaskSteps) {
+		$sth1 = $dbh->prepare("SELECT * FROM AchvStepTasks WHERE AchvID = $achv_num AND StepID = $step");
+		$sth1->execute( );
+		while(my $ref = $sth1->fetchrow_hashref) {
+			my $TaskID=$ref->{'TaskID'};
+			push @SubTasks,$TaskID;
+		}
+	}
+
+	# open the HTML file
+	open(my $fh, '>', $html_file) or die "Could not open html file for write '$html_file' $!";
+
+	# print html header
+	print $fh "<head> <title>$memberType $achv</title>\n";
+	print $fh <<'HTML';
+	<link href="css/960.css" rel="stylesheet" media="screen" />
+	<link href="css/defaultTheme.css" rel="stylesheet" media="screen" />
+	<link href="css/myTheme.css" rel="stylesheet" media="screen" />
+	
+	<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.1.0/jquery.min.js"></script>
+	<script src="Fixed-Header-Table-master/jquery.fixedheadertable.min.js"></script>
+	</head>
+
+	<body>
+
+	<table class="fancyTable" id="tt" cellpadding="0" cellspacing="0">
+HTML
+
+	# print out header
+	print $fh "<thead><tr>\n";
+	print $fh "<th>$memberType $achv</th>\n";
+	# print achievement names
+	foreach my $foo (@SubAchievements) {
+		my $Achv=$Achievements{$foo}{'Achv'};
+		if ($Achv =~ /(.*)\s-\s.*/) {
+			print $fh "<th><span title=\"$Achv\">$1</span></th>\n";
+		} else {
+			print $fh "<th>$Achv</th>\n";
+		}
+	}
+	# print task names
+	foreach my $foo (@SubTasks) {
+		my $TaskName=$Tasks{$foo}{'TaskName'};
+		if ($TaskName =~ /^([OPL]\-\d+)\s.*/) {
+			print $fh "<th><span title=\"$TaskName\">$1</span></th>\n";
+		} elsif ($TaskName =~ /Commander Approval/) {
+			print $fh "<th><span title=\"$TaskName\">Approval</span></th>\n";
+		} elsif ($TaskName =~ /Exercise Participation/) {
+			print $fh "<th><span title=\"$TaskName\">Mission</span></th>\n";
+		} elsif ($TaskName =~ /CAPT 117.*Part\s(\d+)/) {
+			print $fh "<th><span title=\"$TaskName\">117-$1</span></th>\n";
+		} elsif ($TaskName =~ /First Aid Training/) {
+			print $fh "<th><span title=\"$TaskName\">1st Aid</span></th>\n";
+		} elsif ($TaskName =~ /Aircraft Ground Handling/) {
+			print $fh "<th><span title=\"$TaskName\">AGH</span></th>\n";
+		} else {
+			print $fh "<th>$Tasks{$foo}{'TaskName'}</th>\n";
+		}
+	}
+	print $fh "<th>Num Needed</th>\n";
+	print $fh "</tr></thead>\n";
+
+	my $query="SELECT * FROM Member WHERE Type = '$memberType' ORDER BY NameLast ASC";
+	$sth1 = $dbh->prepare($query) or die "Unable to prepare $query" . $dbh->errst;
+	$sth1->execute( ) or die "Unable to execute $query" . $dbh->errst;
+	while(my $ref = $sth1->fetchrow_hashref) {
+		my $CAPID=$ref->{'CAPID'};
+		my $NameLast=$ref->{'NameLast'};
+		my $NameFirst=$ref->{'NameFirst'};
+		my $Rank=$ref->{'Rank'};
+	
+		print $fh "<tr>\n";
+		print $fh "<td><span title=\"CAPID: $CAPID, $Rank $NameFirst $NameLast\">$NameLast, $NameFirst";
+		# check to see if they have an ACTIVE record
+		$sth2 = $dbh->prepare("SELECT * FROM MbrAchievements WHERE CAPID = $CAPID AND AchvID = $achv_num AND Status = 'ACTIVE'");
+		$sth2->execute( );
+		if (! $sth2->rows) {
+	#		print $fh " - INC";
+			$sth2->finish;
+		} else {
+			print $fh " - ACTIVE";
+			$sth2->finish;
+		}
+		print $fh "</span></td>\n";
+	
+		my $numNeeded=0;
+	
+		# print out achievements required
+		foreach my $foo (@SubAchievements) {
+			# check to see if they have an ACTIVE record
+			$sth2 = $dbh->prepare("SELECT * FROM MbrAchievements WHERE CAPID = $CAPID AND AchvID = $foo AND Status = 'ACTIVE'");
+			$sth2->execute( );
+			if (! $sth2->rows) {
+				$sth2->finish;
+				print $fh "<td>NEED</td>\n";
+				$numNeeded++;
+				$achvCount{$foo}++;
+			} else {
+				$sth2->finish;
+				print $fh "<td></td>\n";
+			}
+		}
+	
+		# print out tasks required
+		foreach my $foo (@SubTasks) {
+			# check to see if they have an ACTIVE record
+			$sth2 = $dbh->prepare("SELECT * FROM MbrTasks WHERE CAPID = $CAPID AND TaskID = $foo AND Status = 'ACTIVE'");
+			$sth2->execute( );
+			if (! $sth2->rows) {
+				$sth2->finish;
+				print $fh "<td>NEED</td>\n";
+				$numNeeded++;
+				$taskCount{$foo}++;
+			} else {
+				$sth2->finish;
+				print $fh "<td></td>\n";
+			}
+		}
+	print $fh "<td>$numNeeded</td>\n";
+	print $fh "</tr>\n";
+	}
+	
+	# print out footer row
+	print $fh "<tfoot><tr>\n";
+	print $fh "<td>Number Needed:</td>\n";
+	foreach my $foo (@SubAchievements) {
+		print $fh "<td>$achvCount{$foo}</td>\n";
+	}
+	foreach my $foo (@SubTasks) {
+		print $fh "<td>$taskCount{$foo}</td>\n";
+	}
+	print $fh "<td></td>\n";
+	print $fh "</tr></tfoot>\n";
+	
+	print $fh <<'HTML';
+	</table>
+
+	<script>
+	$('#tt').fixedHeaderTable({
+        	footer: true,
+        	cloneHeadToFoot: false,
+        	fixedColumn: true ,
+        	autoShow: true,
+        	altClass: 'odd'
+	});
+	</script>
+
+	</body>
+HTML
+
+	close $fh;
+	print "$memberType $achv $html_url\n";
+	print $ofh "<A HREF=\"$html_url\">$memberType $achv</A><BR>\n";
+}
+
+open(my $mfh, '>', $mail_file) or die "Could not open mail file for write '$mail_file' $!";
+print $mfh <<'MAIL';
+<HTML><BODY>
+MAIL
+printTable ($mfh,"SENIOR","UDF");
+printTable ($mfh,"CADET","UDF");
+printTable ($mfh,"SENIOR","GTM3");
+printTable ($mfh,"CADET","GTM3");
+printTable ($mfh,"SENIOR","MRO");
+printTable ($mfh,"CADET","MRO");
+printTable ($mfh,"SENIOR","FLM");
+printTable ($mfh,"CADET","FLM");
+print $mfh <<'MAIL';
+</BODY></HTML>
+MAIL
+close $mfh;
+
+my $mail_text;
+open ($mfh, '<', $mail_file) or die "Could not open mail file for read '$mail_file' $!"; {
+	local $/;
+	$mail_text = <$mfh>;
+}
+close $mfh;
+
+my $msg = MIME::Lite->new(
+	From => $mail_from,
+	To => $mail_to,
+	Type => 'text/html',
+	Subject => $mail_subject,
+	Data => $mail_text
+);
+$msg->send();
